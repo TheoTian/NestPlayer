@@ -7,8 +7,6 @@ import android.view.Display;
 import android.widget.RelativeLayout;
 
 import com.theo.nexplayer.NexVideoView;
-import com.theo.nexplayer.jni.NativeMediaPlayer;
-import com.theo.nexplayer.net.Requester;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -44,19 +42,19 @@ public class MainActivity extends AppCompatActivity {
         NexVideoView videoView = new NexVideoView(this);
         ((RelativeLayout) findViewById(R.id.container)).addView(videoView,
                 new RelativeLayout.LayoutParams(display.getWidth(), display.getWidth() * 9 / 16));
-//        videoView.testPlay(URL);
-        Log.d("test", NativeMediaPlayer._test());
-
-        Requester.get("http://www.baidu.com", null, new Requester.Listener() {
-            @Override
-            public void onSuccess(int code, String response) {
-                Log.d("test", response);
-            }
-
-            @Override
-            public void onFailed(int status) {
-            }
-        });
+        videoView.testPlay(URL);
+//        Log.d("test", NativeMediaPlayer._test());
+//
+//        Requester.get("http://www.baidu.com", null, new Requester.Listener() {
+//            @Override
+//            public void onSuccess(int code, String response) {
+//                Log.d("test", response);
+//            }
+//
+//            @Override
+//            public void onFailed(int status) {
+//            }
+//        });
 
     }
 }

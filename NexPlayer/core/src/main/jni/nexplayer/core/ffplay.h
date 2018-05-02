@@ -17,6 +17,8 @@ extern "C" {
 #include <jni.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <unistd.h>
+
 
 jint TestPlay(JNIEnv *env, jobject jobj, jstring url, jobject surface);
 }

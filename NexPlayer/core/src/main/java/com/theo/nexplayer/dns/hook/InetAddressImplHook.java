@@ -2,6 +2,8 @@ package com.theo.nexplayer.dns.hook;
 
 import android.util.Log;
 
+import com.theo.nexplayer.dns.hook.util.InetAddressUtil;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -53,15 +55,11 @@ public class InetAddressImplHook extends BaseHook implements IHook {
             //return null to use system method
             return null;
         }
-//        // Is it a numeric address?
-//        InetAddress result = InetAddress.parseNumericAddressNoThrow(host);
-//        if (result != null) {
-//            result = InetAddress.disallowDeprecatedFormats(host, result);
-//            if (result == null) {
-//                throw new UnknownHostException("Deprecated IPv4 address format: " + host);
-//            }
-//            return new InetAddress[]{result};
-//        }
+
+        boolean isNumeric = InetAddressUtil.isNumeric(host);
+
+        if(isNumeric) {
+        }
 
         return new InetAddress[]{};
     }

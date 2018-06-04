@@ -5,6 +5,181 @@ extern "C" {
 #define MAX_AUDIO_FRME_SIZE  2 * 44100
 
 /**
+ * flush pkt
+ */
+static AVPacket flush_pkt;
+
+static int av_sync_type = AV_SYNC_AUDIO_MASTER;
+
+void global_init() {
+    /**
+     * register
+     */
+    av_register_all();
+
+    avformat_network_init();
+
+    /**
+     * init flush pkt
+     */
+    av_init_packet(&flush_pkt);
+
+    flush_pkt.data = (uint8_t *) &flush_pkt;
+}
+
+static void packet_queue_flush(PacketQueue *q) {
+    MyAVPacketList *pkt, *pkt1;
+
+    SDL_LockMutex(q->mutex);
+    for (pkt = q->first_pkt; pkt; pkt = pkt1) {
+        pkt1 = pkt->next;
+        av_free_packet(&pkt->pkt);
+        av_freep(&pkt);
+    }
+    q->last_pkt = NULL;
+    q->first_pkt = NULL;
+    q->nb_packets = 0;
+    q->size = 0;
+    SDL_UnlockMutex(q->mutex);
+}
+
+static void packet_queue_destroy(PacketQueue *q) {
+    packet_queue_flush(q);
+    SDL_DestroyMutex(q->mutex);
+    SDL_DestroyCond(q->cond);
+}
+
+static void frame_queue_unref_item(Frame *vp) {
+    av_frame_unref(vp->frame);
+    avsubtitle_free(&vp->sub);
+}
+
+static void free_picture(Frame *vp) {
+    if (vp->bmp) {
+//        SDL_FreeYUVOverlay(vp->bmp);
+        vp->bmp = NULL;
+    }
+}
+
+static void frame_queue_destory(FrameQueue *f) {
+    int i;
+    for (i = 0; i < f->max_size; i++) {
+        Frame *vp = &f->queue[i];
+        frame_queue_unref_item(vp);
+        av_frame_free(&vp->frame);
+        free_picture(vp);
+    }
+    SDL_DestroyMutex(f->mutex);
+    SDL_DestroyCond(f->cond);
+}
+
+static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size, int keep_last) {
+    int i;
+    memset(f, 0, sizeof(FrameQueue));
+    if (!(f->mutex = SDL_CreateMutex()))
+        return AVERROR(ENOMEM);
+    if (!(f->cond = SDL_CreateCond()))
+        return AVERROR(ENOMEM);
+    f->pktq = pktq;
+    f->max_size = FFMIN(max_size, FRAME_QUEUE_SIZE);
+    f->keep_last = !!keep_last;
+    for (i = 0; i < f->max_size; i++)
+        if (!(f->queue[i].frame = av_frame_alloc()))
+            return AVERROR(ENOMEM);
+    return 0;
+}
+
+/* packet queue handling */
+static void packet_queue_init(PacketQueue *q) {
+    memset(q, 0, sizeof(PacketQueue));
+    q->mutex = SDL_CreateMutex();
+    q->cond = SDL_CreateCond();
+    q->abort_request = 1;
+}
+
+static void stream_close(VideoState *is) {
+    /* XXX: use a special url_shutdown call to abort parse cleanly */
+    is->abort_request = 1;
+    SDL_WaitThread(is->read_tid, NULL);
+    packet_queue_destroy(&is->videoq);
+    packet_queue_destroy(&is->audioq);
+    packet_queue_destroy(&is->subtitleq);
+
+    /* free all pictures */
+    frame_queue_destory(&is->pictq);
+    frame_queue_destory(&is->sampq);
+    frame_queue_destory(&is->subpq);
+    SDL_DestroyCond(is->continue_read_thread);
+#if !CONFIG_AVFILTER
+    sws_freeContext(is->img_convert_ctx);
+#endif
+    av_free(is);
+}
+
+static void set_clock_at(Clock *c, double pts, int serial, double time) {
+    c->pts = pts;
+    c->last_updated = time;
+    c->pts_drift = c->pts - time;
+    c->serial = serial;
+}
+
+static void set_clock(Clock *c, double pts, int serial) {
+    double time = av_gettime_relative() / 1000000.0;
+    set_clock_at(c, pts, serial, time);
+}
+
+static void init_clock(Clock *c, int *queue_serial) {
+    c->speed = 1.0;
+    c->paused = 0;
+    c->queue_serial = queue_serial;
+    set_clock(c, NAN, -1);
+}
+
+/* this thread gets the stream from the disk or the network */
+static int read_thread(void *arg) {
+
+}
+
+static VideoState *stream_open(const char *filename, AVInputFormat *iformat) {
+    VideoState *is;
+    is = (VideoState *) av_mallocz(sizeof(VideoState));
+    if (!is)
+        return NULL;
+    av_strlcpy(is->filename, filename, sizeof(is->filename));
+    is->iformat = iformat;
+    is->ytop = 0;
+    is->xleft = 0;
+
+    /* start video display */
+    if (frame_queue_init(&is->pictq, &is->videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0)
+        goto fail;
+    if (frame_queue_init(&is->subpq, &is->subtitleq, SUBPICTURE_QUEUE_SIZE, 0) < 0)
+        goto fail;
+    if (frame_queue_init(&is->sampq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0)
+        goto fail;
+
+    packet_queue_init(&is->videoq);
+    packet_queue_init(&is->audioq);
+    packet_queue_init(&is->subtitleq);
+
+    is->continue_read_thread = SDL_CreateCond();
+
+    init_clock(&is->vidclk, &is->videoq.serial);
+    init_clock(&is->audclk, &is->audioq.serial);
+    init_clock(&is->extclk, &is->extclk.serial);
+    is->audio_clock_serial = -1;
+    is->av_sync_type = av_sync_type;
+    is->read_tid = SDL_CreateThreadEx(&is->_read_tid, read_thread, is, "ff_read");
+
+    if (!is->read_tid) {
+        fail:
+        stream_close(is);
+        return NULL;
+    }
+    return is;
+}
+
+/**
  * just for learning
  *
  * @param env
@@ -31,7 +206,7 @@ jint TestPlay(JNIEnv *env, jobject jobj, jstring url, jobject surface) {
     AVCodec *vCodec;
     AVCodec *aCodec;
 
-    char input_str[500] = {0};
+    char input_str[3000] = {0};
     //读取输入的视频频文件地址
     sprintf(input_str, "%s", env->GetStringUTFChars(url, NULL));
     //初始化
@@ -91,20 +266,20 @@ jint TestPlay(JNIEnv *env, jobject jobj, jstring url, jobject surface) {
 
     //打开解码器
     if (avcodec_open2(vCodecCtx, vCodec, NULL) < 0) {
-        LOGD("Couldn't open codec.\n");
+        LOGE("Couldn't open codec.\n");
         return -1;
     }
 
     //打开解码器
     if (avcodec_open2(aCodecCtx, aCodec, NULL) < 0) {
-        LOGD("Couldn't open codec.\n");
+        LOGE("Couldn't open codec.\n");
         return -1;
     }
 
     //获取界面传下来的surface
     nativeWindow = ANativeWindow_fromSurface(env, surface);
     if (0 == nativeWindow) {
-        LOGD("Couldn't get native window from surface.\n");
+        LOGE("Couldn't get native window from surface.\n");
         return -1;
     }
 
@@ -125,7 +300,7 @@ jint TestPlay(JNIEnv *env, jobject jobj, jstring url, jobject surface) {
                                      width, height, AV_PIX_FMT_RGBA, SWS_BICUBIC, NULL, NULL, NULL);
     if (0 >
         ANativeWindow_setBuffersGeometry(nativeWindow, width, height, WINDOW_FORMAT_RGBA_8888)) {
-        LOGD("Couldn't set buffers geometry.\n");
+        LOGE("Couldn't set buffers geometry.\n");
         ANativeWindow_release(nativeWindow);
         return -1;
     }
@@ -275,4 +450,5 @@ jint TestPlay(JNIEnv *env, jobject jobj, jstring url, jobject surface) {
     avformat_close_input(&pFormatCtx);
     return 0;
 }
+
 }
